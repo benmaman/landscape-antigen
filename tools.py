@@ -14,6 +14,7 @@ from tools import *
 from scipy.interpolate import splprep, splev
 import numpy as np
 import plotly.graph_objects as go
+from mpl_toolkits.mplot3d import Axes3D  # Needed for 3D projection
 
 color_map = {
     'HK68': 'purple',         # hard purple
@@ -131,5 +132,54 @@ def plot_error_scatter(Z,predicted_z,cluster_label,unique_clusters):
     plt.xlim(Z.min()-0.5, Z.max()+0.5)
     plt.ylim(Z.min()-0.5, Z.max()+0.5)
     plt.legend(title="Cluster", bbox_to_anchor=(1.05, 1), loc='upper left',fontsize=8)
+    plt.tight_layout()
+    plt.show()
+
+
+def plot_3d_antibody(X,Y,Z,C):
+
+    fig = plt.figure(figsize=(6, 6))
+    ax = fig.add_subplot(111, projection='3d')
+
+    # Vertical gray impulses
+    for x, y, z in zip(X, Y, Z):
+        ax.plot([x, x], [y, y], [-1, z], color='gray', linewidth=1)
+
+    # Colored points at the top
+    ax.scatter(X, Y, Z, c=C, s=60, edgecolors='black', linewidths=0.5, depthshade=False)
+
+    # Axes labels
+    ax.set_xlabel('')
+    ax.set_ylabel('')
+    ax.set_zlabel('log₂(HI titer / 10)', labelpad=30, fontsize=14)
+
+    # Axis limits
+    ax.set_xlim(-0.11, 1.2)
+    ax.set_ylim(-0.1, 1.5)
+    ax.set_zlim(-1, Z.max())
+
+    # View and aspect
+    ax.view_init(elev=15, azim=235)
+    ax.get_proj = lambda: np.dot(Axes3D.get_proj(ax), np.diag([1, 1.01, 1, 1]))
+    ax.set_box_aspect(aspect=(3, 1, 1.5), zoom=1.2)
+
+    # Remove ticks
+    ax.set_xticks([])
+    ax.set_yticks([])
+    # ax.set_zticks([])
+
+    # Remove grid
+    # ax.grid(False)
+
+    # Turn off background panes
+    ax.xaxis.set_pane_color((1.0, 1.0, 1.0, 0.0))
+    ax.yaxis.set_pane_color((1.0, 1.0, 1.0, 0.0))
+    ax.zaxis.set_pane_color((1.0, 1.0, 1.0, 0.0))
+
+    # Turn off axis lines
+    ax.xaxis._axinfo["grid"]['color'] = (1,1,1,0)
+    ax.yaxis._axinfo["grid"]['color'] = (1,1,1,0)
+    # ax.zaxis._axinfo["grid"]['color'] = (1,1,1,0)
+
     plt.tight_layout()
     plt.show()
