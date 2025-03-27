@@ -15,6 +15,7 @@ from scipy.interpolate import splprep, splev
 import numpy as np
 import plotly.graph_objects as go
 from mpl_toolkits.mplot3d import Axes3D  # Needed for 3D projection
+from typing import List
 
 color_map = {
     'HK68': 'purple',         # hard purple
@@ -181,5 +182,73 @@ def plot_3d_antibody(X,Y,Z,C):
     ax.yaxis._axinfo["grid"]['color'] = (1,1,1,0)
     # ax.zaxis._axinfo["grid"]['color'] = (1,1,1,0)
 
+    plt.tight_layout()
+    plt.show()
+
+
+def smooth(scalars: List[float], weight: float) -> List[float]:
+    last = scalars[0]
+    smoothed = []
+    for point in scalars:
+        smoothed_val = last * weight + (1 - weight) * point
+        smoothed.append(smoothed_val)
+        last = smoothed_val
+    return smoothed
+
+
+def plot_ema_smooth_landscape_with_clusters(
+    x_path_valid, y_path_valid, z_path_pre, z_path_post,
+    df_centroids, color_map, weight=0.9,
+    label_post="Post", label_pre="Pre",
+    color_post="navy", color_pre="gray", fill_color="green"
+):
+    # Step 1: Compute path distance (x-axis)
+    path_deltas = np.sqrt(np.diff(x_path_valid)**2 + np.diff(y_path_valid)**2)
+    path_distance = np.concatenate([[0], np.cumsum(path_deltas)])
+
+    # Step 2: EMA smoothing
+    z_pre_smooth = smooth(z_path_pre, weight)
+    z_post_smooth = smooth(z_path_post, weight)
+
+    # Step 3: Compute cluster tick positions
+    tick_positions = []
+    tick_labels = []
+    tick_colors = []
+
+    for _, row in df_centroids.iterrows():
+        cluster_name = row['cluster']
+        cx, cy = row['x'], row['y']
+        dists = np.sqrt((x_path_valid - cx)**2 + (y_path_valid - cy)**2)
+        closest_idx = np.argmin(dists)
+        tick_positions.append(path_distance[closest_idx])
+        tick_labels.append(str(cluster_name))
+        tick_colors.append(color_map[cluster_name])
+
+    # Step 4: Plot
+    fig, ax = plt.subplots(figsize=(12, 6))
+
+    ax.fill_between(path_distance, 0, z_pre_smooth, color=color_pre, alpha=0.4)
+    ax.fill_between(path_distance, z_pre_smooth, z_post_smooth,
+                    where=np.array(z_post_smooth) > np.array(z_pre_smooth),
+                    color=fill_color, alpha=0.5)
+
+    ax.plot(path_distance, z_post_smooth, color=color_post, linewidth=2.5, label=label_post)
+    ax.plot(path_distance, z_pre_smooth, color=color_pre, linewidth=2.5, label=label_pre)
+
+    ax.set_xlabel('Summary Path (Cluster Order)', fontsize=12)
+    ax.set_ylabel('log₂(HI titer / 10)', fontsize=12)
+    ax.set_title('Smoothed Antibody Landscape with Clusters', fontsize=14)
+
+    # Add colored x-axis cluster labels
+    ax.set_xticks(tick_positions)
+    tick_texts = ax.set_xticklabels(tick_labels, rotation=45)
+    for label, color in zip(tick_texts, tick_colors):
+        label.set_color(color)
+        label.set_fontweight('bold')
+
+    ax.spines['top'].set_visible(False)
+    ax.spines['right'].set_visible(False)
+    ax.grid(False)
+    ax.legend()
     plt.tight_layout()
     plt.show()
