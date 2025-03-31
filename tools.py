@@ -501,7 +501,7 @@ def plot_ema_smooth_landscape_with_clusters(
     # Step 4: Plot
     fig, ax = plt.subplots(figsize=(12, 6))
 
-    ax.fill_between(path_distance, 0, z_pre_smooth, color=color_pre, alpha=0.4)
+    ax.fill_between(path_distance, -1, z_pre_smooth, color=color_pre, alpha=0.4)
     ax.fill_between(path_distance, z_pre_smooth, z_post_smooth,
                     where=np.array(z_post_smooth) > np.array(z_pre_smooth),
                     color=fill_color, alpha=0.5)
