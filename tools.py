@@ -16,6 +16,7 @@ import numpy as np
 import plotly.graph_objects as go
 from mpl_toolkits.mplot3d import Axes3D  # Needed for 3D projection
 from typing import List
+from scipy.optimize import minimize
 
 color_map = {
     'HK68': 'purple',         # hard purple
@@ -40,6 +41,9 @@ def clean_titer(t):
         return np.nan  # or -1 if you prefer explicit undetectable marking
     if t=="<10":
         return 5
+    if t==">=1280":
+        return 1280
+
     elif isinstance(t, str):
         t = t.replace("=", "").replace(">", "").strip()
         try:
@@ -138,10 +142,10 @@ def find_summary_path(df_landscape,unique_clusters,SMOOTH_FACTOR):
     return x_smooth,y_smooth,df_centroids
 
 
-def compute_surface_regression(X,Y,Z,GRID_SIZE,A,CLOSE_NEIGH,cluster_label,unique_clusters):
+def compute_surface_regression(X,Y,Z,GRID_SIZE,A,CLOSE_NEIGH,cluster_label,unique_clusters,OPTIMIZATION=True):
     # Step 1: Create grid over antigenic map
-    x_range = np.linspace(0 , 1 , GRID_SIZE)
-    y_range = np.linspace(0 , 1 , GRID_SIZE)
+    x_range = np.linspace(np.min(X) , np.max(X) , GRID_SIZE)
+    y_range = np.linspace(np.min(Y) , np.max(Y) , GRID_SIZE)
     xj, yj = np.meshgrid(x_range, y_range)
 
 
@@ -169,16 +173,22 @@ def compute_surface_regression(X,Y,Z,GRID_SIZE,A,CLOSE_NEIGH,cluster_label,uniqu
                 print("null becasue sum weight is 0")
                 continue
 
-            # Condtion 3 
-            X_design = sm.add_constant(np.column_stack((X, Y)))
-            try:
-                model = sm.WLS(Z, X_design, weights=w)
-                results = model.fit()
-                beta = results.params
-                landscape_z[i, j] = beta[0] + beta[1] * xj[i, j] + beta[2] * yj[i, j]
-            except:
-                landscape_z[i, j] = np.nan
-                print("null becasue couldnt reach linera regression")
+            # compute  predicted surface
+            if OPTIMIZATION:
+
+                z_val = fit_weighted_surface_at_point(X, Y, Z, w, xj[i, j], yj[i, j])
+                landscape_z[i, j] = z_val
+
+            else:
+                X_design = sm.add_constant(np.column_stack((X, Y)))
+                try:
+                    model = sm.WLS(Z, X_design, weights=w,)
+                    results = model.fit()
+                    beta = results.params
+                    landscape_z[i, j] = beta[0] + beta[1] * xj[i, j] + beta[2] * yj[i, j]
+                except:
+                    landscape_z[i, j] = np.nan
+                    print("null becasue couldnt reach linera regression")
 
     # Step 4: Find corresponding surface height at each (X, Y)
     # Locate closest grid point index
@@ -189,8 +199,6 @@ def compute_surface_regression(X,Y,Z,GRID_SIZE,A,CLOSE_NEIGH,cluster_label,uniqu
     x_idx = np.clip(x_idx, 0, GRID_SIZE - 1)
     y_idx = np.clip(y_idx, 0, GRID_SIZE - 1)
 
-    # Get surface height at that grid point
-    Z_surf_at_data = landscape_z[y_idx, x_idx]
 
     # Get surface height at that grid point
     predicted_z = landscape_z[y_idx, x_idx]
@@ -200,6 +208,102 @@ def compute_surface_regression(X,Y,Z,GRID_SIZE,A,CLOSE_NEIGH,cluster_label,uniqu
     plot_error_scatter(Z,predicted_z,cluster_label,unique_clusters)
     return x_range,y_range,landscape_z,predicted_z
 
+
+
+
+def fit_weighted_surface_at_point(X, Y, Z, w, xj, yj):
+    """
+    Fits a local linear regression model at a given grid point (xj, yj)
+    using weighted least squares. Censored titers are handled via L-BFGS-B optimization.
+
+    Parameters:
+    -----------
+    X, Y : np.ndarray
+        Coordinates of the antigenic points.
+    Z : np.ndarray
+        Log-transformed titer values with censored values marked.
+    w : np.ndarray
+        Weights for each point based on tricubic kernel.
+    xj, yj : float
+        Coordinates of the grid point being fitted.
+
+    Returns:
+    --------
+    float
+        The predicted landscape height (z-value) at grid point (xj, yj).
+    """
+     # Step 1: Build design matrix for linear regression
+
+    X_design = sm.add_constant(np.column_stack((X, Y)))
+
+    #assign undtectable and high titer values
+    detectable_mask = (Z > -1) & (Z < 7)
+    undetectable_mask = Z <= -1
+    high_mask = Z >= 7
+
+    detectable_idx = np.where(detectable_mask)[0]
+    undetectable_idx = np.where(undetectable_mask)[0]
+    high_idx = np.where(high_mask)[0]
+
+    # Step 3: Define custom RMSE loss function that handles censoring behavior
+
+    def rmse_loss_local(censored_vals):
+        Z_full = Z.copy()
+        Z_full[undetectable_idx] = censored_vals[:len(undetectable_idx)]
+        Z_full[high_idx] = censored_vals[len(undetectable_idx):]
+
+        try:
+            model = sm.WLS(Z_full, X_design, weights=w)
+            results = model.fit()
+            beta = results.params
+            z_pred = beta[0] + beta[1] * xj + beta[2] * yj
+        except:
+            return np.inf
+
+        errors = []
+        for idx in range(len(Z)):
+            if idx in undetectable_idx:
+                if z_pred <= 0:
+                    continue #no penalty
+                else:
+                    errors.append((z_pred - (-1)) ** 2)
+            elif idx in high_idx:
+                if z_pred >= 7:
+                    continue #no penalty
+                else:
+                    errors.append((z_pred - 7) ** 2)
+            else:
+                errors.append((z_pred - Z[idx]) ** 2)
+
+        return np.sqrt(np.mean(errors)) if errors else 0
+    
+    # Step 4: Optimize censored values using L-BFGS-B to minimize RMSE
+
+    if len(undetectable_idx) + len(high_idx) > 0:
+        x0 = np.concatenate([
+            np.full(len(undetectable_idx), -1),
+            np.full(len(high_idx), 7)
+        ])
+        bounds = [(-10, -1)] * len(undetectable_idx) + [(7, 10)] * len(high_idx)
+
+        res = minimize(rmse_loss_local, x0=x0, bounds=bounds, method='L-BFGS-B')
+
+        Z_full = Z.copy()
+        if res.success:
+            Z_full[undetectable_idx] = res.x[:len(undetectable_idx)]
+            Z_full[high_idx] = res.x[len(undetectable_idx):]
+        else:
+            return np.nan
+    else:
+        Z_full = Z
+
+    try:
+        model = sm.WLS(Z_full, X_design, weights=w)
+        results = model.fit()
+        beta = results.params
+        return beta[0] + beta[1] * xj + beta[2] * yj
+    except:
+        return np.nan
 
 
 def plot_error_scatter(Z,predicted_z,cluster_label,unique_clusters):
@@ -250,8 +354,8 @@ def plot_3d_antibody(X,Y,Z,C):
     ax.set_zlabel('log₂(HI titer / 10)', labelpad=30, fontsize=14)
 
     # Axis limits
-    ax.set_xlim(-0.11, 1.2)
-    ax.set_ylim(-0.1, 1.5)
+    ax.set_xlim(np.min(X), np.max(X))
+    ax.set_ylim(np.min(Y), np.max(X))
     ax.set_zlim(-1, Z.max())
 
     # View and aspect
@@ -451,11 +555,14 @@ def plot_2d_landscape(x_path_valid,y_path_valid,z_path_valid,df_centroids,weight
     # Step 3: Plot with colored x-tick labels
     fig, ax = plt.subplots(figsize=(10, 5))
     ax.plot(path_distance, z_path_valid, color='black', linewidth=2)
+    ax.fill_between(path_distance, -1, z_path_valid, color="gray", alpha=0.4)
 
     ax.set_xlabel('Summary Path (Cluster Order)', fontsize=12)
     ax.set_ylabel('log₂(HI titer / 10)', fontsize=12)
     ax.set_title('Titer Values Along Summary Path', fontsize=14)
+    ax.set_ylim(0,8)
     ax.grid(True)
+
 
     # Set tick positions
     ax.set_xticks(tick_positions)
@@ -470,9 +577,9 @@ def plot_2d_landscape(x_path_valid,y_path_valid,z_path_valid,df_centroids,weight
     plt.show()
 
 
-def plot_ema_smooth_landscape_with_clusters(
+def plot_ema_smooth_landscape_with_clusters1(
     x_path_valid, y_path_valid, z_path_pre, z_path_post,
-    df_centroids, color_map, weight=0.9,
+    df_landscape, color_map, weight=0.9,
     label_post="Post", label_pre="Pre",
     color_post="navy", color_pre="gray", fill_color="green"
 ):
@@ -489,14 +596,13 @@ def plot_ema_smooth_landscape_with_clusters(
     tick_labels = []
     tick_colors = []
 
-    for _, row in df_centroids.iterrows():
-        cluster_name = row['cluster']
-        cx, cy = row['x'], row['y']
+    for _, row in df_landscape.iterrows():
+        cx, cy = row['AG coordinate 2'], row['AG coordinate 1']
         dists = np.sqrt((x_path_valid - cx)**2 + (y_path_valid - cy)**2)
         closest_idx = np.argmin(dists)
+
         tick_positions.append(path_distance[closest_idx])
-        tick_labels.append(str(cluster_name))
-        tick_colors.append(color_map[cluster_name])
+        tick_colors.append(row['color'])
 
     # Step 4: Plot
     fig, ax = plt.subplots(figsize=(12, 6))
@@ -512,17 +618,24 @@ def plot_ema_smooth_landscape_with_clusters(
     ax.set_xlabel('Summary Path (Cluster Order)', fontsize=12)
     ax.set_ylabel('log₂(HI titer / 10)', fontsize=12)
     ax.set_title('Smoothed Antibody Landscape with Clusters', fontsize=14)
+    ax.set_ylim(0, 8)
 
-    # Add colored x-axis cluster labels
+    # Optional: keep tick labels or remove
     ax.set_xticks(tick_positions)
-    tick_texts = ax.set_xticklabels(tick_labels, rotation=45)
-    for label, color in zip(tick_texts, tick_colors):
-        label.set_color(color)
-        label.set_fontweight('bold')
+    ax.set_xticklabels(tick_labels, rotation=45, fontsize=10)
+
+    # Step 5: Add colored dots below the x-axis
+    for xdata, color in zip(tick_positions, tick_colors):
+        x_axes = ax.transData.transform((xdata, 0))[0]
+        x_axes = ax.transAxes.inverted().transform((x_axes, 0))[0]
+        ax.scatter(x_axes, -0.06, color=color, s=60, transform=ax.transAxes, clip_on=False)
 
     ax.spines['top'].set_visible(False)
     ax.spines['right'].set_visible(False)
     ax.grid(False)
     ax.legend()
+
+    # Adjust layout to avoid cropping dots
     plt.tight_layout()
+    plt.subplots_adjust(bottom=0.2)
     plt.show()
