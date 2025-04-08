@@ -88,7 +88,7 @@ def plot_antigenic_map(df_antigenic_map,color_map,unique_clusters):
 
 
 
-def find_summary_path(df_landscape,unique_clusters,SMOOTH_FACTOR):
+def find_summary_path(df_landscape,SMOOTH_FACTOR):
 
     # Get unique clusters
     unique_clusters = df_landscape['cluster'].unique()
@@ -108,6 +108,24 @@ def find_summary_path(df_landscape,unique_clusters,SMOOTH_FACTOR):
     tck, u = splprep([points[:, 0], points[:, 1]], s=SMOOTH_FACTOR)
     unew = np.linspace(0, 1, 200)
     x_smooth, y_smooth = splev(unew, tck)
+
+
+    # Extend last segment forward (same direction)
+    # Get direction of final segment
+    dx = x_smooth[-1] - x_smooth[-2]
+    dy = y_smooth[-1] - y_smooth[-2]
+
+    # Extend by N steps forward
+    N_extend = 3
+    step_size = 1.0  # you can adjust to control how far it extends
+
+    x_extension = [x_smooth[-1] + i * dx * step_size for i in range(1, N_extend + 1)]
+    y_extension = [y_smooth[-1] + i * dy * step_size for i in range(1, N_extend + 1)]
+
+    # Combine with original path
+    x_smooth = np.concatenate([x_smooth, x_extension])
+    y_smooth = np.concatenate([y_smooth, y_extension])
+
     summary_path = np.column_stack((x_smooth, y_smooth))
 
 
@@ -401,22 +419,37 @@ def plot3d_antibody_surface(X,Y,Z,C,GRID_SIZE,landscape_z,x_range,y_range,x_smoo
     # -- Summary path Z values (interpolated from grid)
     x_idx_path = np.searchsorted(x_range, x_smooth) - 1
     y_idx_path = np.searchsorted(y_range, y_smooth) - 1
+
+    # Check if each path point is inside the grid
+    inside_x = (x_smooth >= x_range[0]) & (x_smooth <= x_range[-1])
+    inside_y = (y_smooth >= y_range[0]) & (y_smooth <= y_range[-1])
+    inside_mask = inside_x & inside_y
+
+    # Clip to valid index bounds
     x_idx_path = np.clip(x_idx_path, 0, landscape_z.shape[1] - 1)
     y_idx_path = np.clip(y_idx_path, 0, landscape_z.shape[0] - 1)
-    z_path = landscape_z[y_idx_path, x_idx_path]
 
-    # Mask invalid path points
+    # Create z_path and assign only inside values
+    # Create z_path and assign default -1 for out-of-bounds points
+    z_path = np.full_like(x_smooth, -1, dtype=float)
+    z_path[inside_mask] = landscape_z[y_idx_path[inside_mask], x_idx_path[inside_mask]]
+
+    # Filter out invalid path points (those still equal to -1)
+    valid_mask = z_path > -1
+
+    # Filter out invalid path points
     valid_mask = ~np.isnan(z_path)
     x_path_valid = x_smooth[valid_mask]
     y_path_valid = y_smooth[valid_mask]
     z_path_valid = z_path[valid_mask]
-
 
     ### Step 2: Calculate surface Z values at data points and transparency
 
     # Grid indices of (X, Y) sample locations
     x_idx = np.searchsorted(x_range, X) - 1
     y_idx = np.searchsorted(y_range, Y) - 1
+    
+    
     x_idx = np.clip(x_idx, 0, GRID_SIZE - 1)
     y_idx = np.clip(y_idx, 0, GRID_SIZE - 1)
 
@@ -518,66 +551,67 @@ def plot3d_antibody_surface(X,Y,Z,C,GRID_SIZE,landscape_z,x_range,y_range,x_smoo
     return masked_z,x_path_valid,y_path_valid,z_path_valid
 
 def smooth(scalars: List[float], weight: float) -> List[float]:
-    last = scalars[0]
-    smoothed = []
-    for point in scalars:
+    # Find index of the first non -1 value
+    pos = 0
+    for i, val in enumerate(scalars):
+        if val > -1:
+            pos = i
+            break
+    else:
+        raise ValueError("All values are -1, cannot smooth.")
+
+    smoothed = scalars[:pos]  # keep the initial -1s unchanged
+    smoothed = scalars[:pos].tolist()  # Now it's a Python list and supports .append()
+    last = scalars[pos]
+    for point in scalars[pos:]:
         smoothed_val = last * weight + (1 - weight) * point
         smoothed.append(smoothed_val)
         last = smoothed_val
+
     return smoothed
 
 
-def plot_2d_landscape(x_path_valid,y_path_valid,z_path_valid,df_centroids,weight=0.9):
-
-    # Step 1: Compute distance along path (again, if not already)
+def plot_2d_landscape(x_path_valid, y_path_valid, z_path_valid, df_centroids, weight=0.9):
+    # Step 1: Compute distance along path
     path_deltas = np.sqrt(np.diff(x_path_valid)**2 + np.diff(y_path_valid)**2)
-    path_distance = np.concatenate([[0], np.cumsum(path_deltas)])  # x-axis
+    path_distance = np.concatenate([[0], np.cumsum(path_deltas)])
+
     # Step 2: EMA smoothing
     z_path_valid = smooth(z_path_valid, weight)
 
-    # Step 2: Find closest point on path for each cluster centroid
+    # Step 3: Find closest point on path for each cluster centroid
     tick_positions = []
-    tick_labels = []
     tick_colors = []
 
-    for i, row in df_centroids.iterrows():
-        cluster_name = row['cluster']
-        cx, cy = row['x'], row['y']
-
-        # Compute distances to all points on the path
+    for _, row in df_centroids.iterrows():
+        cx, cy = row['AG coordinate 2'], row['AG coordinate 1']
         dists = np.sqrt((x_path_valid - cx)**2 + (y_path_valid - cy)**2)
         closest_idx = np.argmin(dists)
 
         tick_positions.append(path_distance[closest_idx])
-        tick_labels.append(str(cluster_name))
-        tick_colors.append(color_map[cluster_name])  # Use your custom color map
+        tick_colors.append(row['color'])
 
-    # Step 3: Plot with colored x-tick labels
-    fig, ax = plt.subplots(figsize=(10, 5))
+    # Step 4: Plot
+    fig, ax = plt.subplots(figsize=(5, 5))
     ax.plot(path_distance, z_path_valid, color='black', linewidth=2)
     ax.fill_between(path_distance, -1, z_path_valid, color="gray", alpha=0.4)
 
-    ax.set_xlabel('Summary Path (Cluster Order)', fontsize=12)
     ax.set_ylabel('log₂(HI titer / 10)', fontsize=12)
-    ax.set_title('Titer Values Along Summary Path', fontsize=14)
-    ax.set_ylim(0,8)
+    ax.set_ylim(0, 8)
     ax.grid(True)
 
-
-    # Set tick positions
-    ax.set_xticks(tick_positions)
-
-    # Set tick labels with colors
-    tick_texts = ax.set_xticklabels(tick_labels, rotation=45)
-    for label, color in zip(tick_texts, tick_colors):
-        label.set_color(color)
-        label.set_fontweight('bold')
-
+    # Step 5: Plot dots absolutely below the x-axis using axes coordinates
+    for xdata, color in zip(tick_positions, tick_colors):
+        # Convert data x to axes fraction
+        x_axes = ax.transData.transform((xdata, 0))[0]
+        x_axes = ax.transAxes.inverted().transform((x_axes, 0))[0]
+        ax.scatter(x_axes, -0.05, color=color, s=60,alpha=0.6, transform=ax.transAxes, clip_on=False)
+    plt.xticks([])
     plt.tight_layout()
+    plt.subplots_adjust(bottom=0.5)
     plt.show()
 
-
-def plot_ema_smooth_landscape_with_clusters1(
+def plot_ema_smooth_landscape_with_clusters(
     x_path_valid, y_path_valid, z_path_pre, z_path_post,
     df_landscape, color_map, weight=0.9,
     label_post="Post", label_pre="Pre",
@@ -605,7 +639,7 @@ def plot_ema_smooth_landscape_with_clusters1(
         tick_colors.append(row['color'])
 
     # Step 4: Plot
-    fig, ax = plt.subplots(figsize=(12, 6))
+    fig, ax = plt.subplots(figsize=(5, 5))
 
     ax.fill_between(path_distance, -1, z_pre_smooth, color=color_pre, alpha=0.4)
     ax.fill_between(path_distance, z_pre_smooth, z_post_smooth,
@@ -615,9 +649,7 @@ def plot_ema_smooth_landscape_with_clusters1(
     ax.plot(path_distance, z_post_smooth, color=color_post, linewidth=2.5, label=label_post)
     ax.plot(path_distance, z_pre_smooth, color=color_pre, linewidth=2.5, label=label_pre)
 
-    ax.set_xlabel('Summary Path (Cluster Order)', fontsize=12)
     ax.set_ylabel('log₂(HI titer / 10)', fontsize=12)
-    ax.set_title('Smoothed Antibody Landscape with Clusters', fontsize=14)
     ax.set_ylim(0, 8)
 
     # Optional: keep tick labels or remove
@@ -628,7 +660,7 @@ def plot_ema_smooth_landscape_with_clusters1(
     for xdata, color in zip(tick_positions, tick_colors):
         x_axes = ax.transData.transform((xdata, 0))[0]
         x_axes = ax.transAxes.inverted().transform((x_axes, 0))[0]
-        ax.scatter(x_axes, -0.06, color=color, s=60, transform=ax.transAxes, clip_on=False)
+        ax.scatter(x_axes, -0.05, color=color, s=60, transform=ax.transAxes, clip_on=False)
 
     ax.spines['top'].set_visible(False)
     ax.spines['right'].set_visible(False)
@@ -637,5 +669,5 @@ def plot_ema_smooth_landscape_with_clusters1(
 
     # Adjust layout to avoid cropping dots
     plt.tight_layout()
-    plt.subplots_adjust(bottom=0.2)
+    plt.subplots_adjust(bottom=0.5)
     plt.show()
