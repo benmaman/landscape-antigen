@@ -571,7 +571,7 @@ def smooth(scalars: List[float], weight: float) -> List[float]:
     return smoothed
 
 
-def plot_2d_landscape(x_path_valid, y_path_valid, z_path_valid, df_centroids, weight=0.9):
+def plot_2d_landscape(x_path_valid, y_path_valid, z_path_valid, df_centroids, weight=0.9,y_lim=10):
     # Step 1: Compute distance along path
     path_deltas = np.sqrt(np.diff(x_path_valid)**2 + np.diff(y_path_valid)**2)
     path_distance = np.concatenate([[0], np.cumsum(path_deltas)])
@@ -597,8 +597,8 @@ def plot_2d_landscape(x_path_valid, y_path_valid, z_path_valid, df_centroids, we
     ax.fill_between(path_distance, -1, z_path_valid, color="gray", alpha=0.4)
 
     ax.set_ylabel('log₂(HI titer / 10)', fontsize=12)
-    ax.set_ylim(0, 8)
-    ax.grid(True)
+    ax.set_ylim(0, y_lim)
+    ax.grid(False)
 
     # Step 5: Plot dots absolutely below the x-axis using axes coordinates
     for xdata, color in zip(tick_positions, tick_colors):
@@ -615,7 +615,7 @@ def plot_ema_smooth_landscape_with_clusters(
     x_path_valid, y_path_valid, z_path_pre, z_path_post,
     df_landscape, color_map, weight=0.9,
     label_post="Post", label_pre="Pre",
-    color_post="navy", color_pre="gray", fill_color="green"
+    color_post="navy", color_pre="gray", fill_color="green",y_lim=10
 ):
     # Step 1: Compute path distance (x-axis)
     path_deltas = np.sqrt(np.diff(x_path_valid)**2 + np.diff(y_path_valid)**2)
@@ -650,7 +650,8 @@ def plot_ema_smooth_landscape_with_clusters(
     ax.plot(path_distance, z_pre_smooth, color=color_pre, linewidth=2.5, label=label_pre)
 
     ax.set_ylabel('log₂(HI titer / 10)', fontsize=12)
-    ax.set_ylim(0, 8)
+
+    ax.set_ylim(0, y_lim)
 
     # Optional: keep tick labels or remove
     ax.set_xticks(tick_positions)
@@ -665,7 +666,7 @@ def plot_ema_smooth_landscape_with_clusters(
     ax.spines['top'].set_visible(False)
     ax.spines['right'].set_visible(False)
     ax.grid(False)
-    ax.legend()
+    # ax.legend(loc='upper left')
 
     # Adjust layout to avoid cropping dots
     plt.tight_layout()
